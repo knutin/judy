@@ -9,6 +9,7 @@ proper offset into this chunk. Deletion is currently not supported.
 
 Usage:
 ```erlang
+
     {ok, J} = judy:new(100, 2).
     ok = judy:insert(J, <<"some key">>, <<123, 123>>).
     <<123, 123>> = judy:get(J, <<"some key">>).
