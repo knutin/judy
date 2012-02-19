@@ -6,6 +6,7 @@ values. The library allocates and manages a large enough chunk of
 memory to store the values, using the Judy array for finding the
 proper offset into this chunk. Deletion is currently not supported.
 
+See eunit tests in `src/judy.erl` for examples.
 
 Usage:
 ```erlang
@@ -15,4 +16,4 @@ Usage:
     <<123, 123>> = judy:get(J, <<"some key">>).
 ```
 
-See eunit tests in `src/judy.erl` for more examples.
+
