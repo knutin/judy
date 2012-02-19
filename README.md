@@ -13,7 +13,6 @@ Usage:
     {ok, J} = judy:new(100, 2).
     ok = judy:insert(J, <<"some key">>, <<123, 123>>).
     <<123, 123>> = judy:get(J, <<"some key">>).
-
 ```
 
 See eunit tests in `src/judy.erl` for more examples.
