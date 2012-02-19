@@ -5,32 +5,46 @@
 #include "judy.h"
 
 
-judy_value* mk_value(unsigned char* value, size_t size)
+char* mk_value(unsigned char* value, size_t size)
 {
-  judy_value* jv = enif_alloc(sizeof(judy_value));
-  jv->size = size;
-  jv->value = enif_alloc(size);
-  memcpy(jv->value, value, size);
+  char* v = enif_alloc(size);
+  memcpy(v, value, size);
 
-  return jv;
+  return v;
 }
 
-void free_value(judy_value* v)
+void free_value(char* v)
 {
-  enif_free(v->value);
   enif_free(v);
 }
 
 
 static ERL_NIF_TERM judy_new(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
-  judy_t* judy = (judy_t*)enif_alloc_resource(JUDY_RESOURCE, sizeof(judy_t));
-  judy->judy = NULL;
-  judy->num_keys = 0;
+  unsigned long max_keys;
+  int value_size;
 
-  ERL_NIF_TERM result = enif_make_resource(env, judy);
-  enif_release_resource(judy);
-  return enif_make_tuple2(env, enif_make_atom(env, "ok"), result);
+  if (enif_get_ulong(env, argv[0], &max_keys) &&
+      enif_get_int(env, argv[1], &value_size))
+    {
+      judy_t* judy = (judy_t*)enif_alloc_resource(JUDY_RESOURCE, sizeof(judy_t));
+
+      judy->judy = NULL;
+      judy->max_keys = max_keys;
+      judy->value_size = (size_t)value_size;
+
+      judy->buf = enif_alloc(judy->value_size * judy->max_keys);
+      judy->last_index = 0;
+      judy->num_keys = 0;
+
+
+      ERL_NIF_TERM result = enif_make_resource(env, judy);
+      enif_release_resource(judy);
+
+      return enif_make_tuple2(env, enif_make_atom(env, "ok"), result);
+    } else {
+    return enif_make_badarg(env);
+  }
 }
 
 ERL_NIF_TERM judy_insert(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
@@ -45,16 +59,26 @@ ERL_NIF_TERM judy_insert(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
       enif_inspect_binary(env, argv[1], &key) &&
       enif_inspect_binary(env, argv[2], &value)) {
 
+    if((size_t)value.size != judy->value_size) {
+      return enif_make_badarg(env);
+    }
+
     JHSG(PValue, judy->judy, key.data, key.size);
 
     if(PValue != NULL) {
       return enif_make_badarg(env);
     }
 
-    judy_value* v = mk_value(value.data, value.size);
+    unsigned long i = judy->last_index++;
+    if(i == judy->max_keys) {
+      return enif_make_badarg(env);
+    }
+
+    char* v = &judy->buf[i*judy->value_size];
+    memcpy(v, value.data, judy->value_size);
 
     JHSI(PValue, judy->judy, key.data, key.size);
-    *PValue = (Word_t)v;
+    *PValue = (Word_t)i;
 
     judy->num_keys++;
 
@@ -81,11 +105,11 @@ ERL_NIF_TERM judy_get(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
       return enif_make_atom(env, "not_found");
     }
 
-    judy_value* v = (judy_value*)*PValue;
+    unsigned long i = (int)*PValue;
 
     ERL_NIF_TERM result_term;
-    unsigned char* result_buf = enif_make_new_binary(env, v->size, &result_term);
-    memcpy(result_buf, v->value, (size_t)v->size);
+    unsigned char* result_buf = enif_make_new_binary(env, judy->value_size, &result_term);
+    memcpy(result_buf, &judy->buf[i*judy->value_size], judy->value_size);
 
     return result_term;
 
@@ -107,17 +131,17 @@ ERL_NIF_TERM judy_update(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 
     JHSG(PValue, judy->judy, key.data, key.size);
 
-    if(PValue != NULL) {
-      judy_value* v = (judy_value*)*PValue;
-      free_value(v);
-    } else {
+    if(PValue == NULL) {
       return enif_make_badarg(env);
     }
 
-    judy_value* v = mk_value(new_value.data, new_value.size);
+    unsigned long i = (unsigned long)*PValue;
+
+    char* v = &judy->buf[i*judy->value_size];
+    memcpy(v, new_value.data, judy->value_size);
 
     JHSI(PValue, judy->judy, key.data, key.size);
-    *PValue = (Word_t)v;
+    *PValue = (Word_t)i;
 
     return enif_make_atom(env, "ok");
   } else {
@@ -141,8 +165,8 @@ ERL_NIF_TERM judy_delete(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
       return enif_make_badarg(env);
     }
 
-    judy_value* v = (judy_value*)*PValue;
-    free_value(v);
+    unsigned long i = (unsigned long)*PValue;
+    memset(&judy->buf[i], '\0', judy->value_size);
 
     JHSD(delete_result, judy->judy, key.data, key.size);
 
@@ -168,24 +192,42 @@ ERL_NIF_TERM judy_num_keys(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 
 void judy_dtor(ErlNifEnv* env, void* arg)
 {
-  /* Word_t bytes; */
-  /* dprintf("judy %p\n", judy); */
-  /* JHSFA(bytes, judy); */
+  judy_t* judy = (judy_t*)arg;
+  Word_t bytes;
+  JHSFA(bytes, judy->judy);
+  fprintf(stderr, "freed %d bytes\n", bytes);
 }
 
 int on_load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
 {
   ErlNifResourceFlags flags = (ErlNifResourceFlags)(ERL_NIF_RT_CREATE | ERL_NIF_RT_TAKEOVER);
   JUDY_RESOURCE = enif_open_resource_type(env, NULL, "judy_resource",
-                                          &judy_dtor,
-                                          flags,
-                                          0);
+                                          &judy_dtor, flags, 0);
   return 0;
 }
 
+static int
+reload(ErlNifEnv* env, void** priv, ERL_NIF_TERM info)
+{
+    return 0;
+}
+
+static int
+upgrade(ErlNifEnv* env, void** priv, void** old_priv, ERL_NIF_TERM info)
+{
+    *priv = *old_priv;
+    return 0;
+}
+
+static void
+unload(ErlNifEnv* env, void* priv)
+{
+    enif_free(priv);
+    return;
+}
 
 static ErlNifFunc nif_funcs[] = {
-  {"new", 0, judy_new},
+  {"new", 2, judy_new},
   {"insert", 3, judy_insert},
   {"get", 2, judy_get},
   {"update", 3, judy_update},
@@ -193,4 +235,4 @@ static ErlNifFunc nif_funcs[] = {
   {"num_keys", 1, judy_num_keys}
 };
 
-ERL_NIF_INIT(judy, nif_funcs, &on_load, NULL, NULL, NULL)
+ERL_NIF_INIT(judy, nif_funcs, &on_load, &reload, &upgrade, &unload)

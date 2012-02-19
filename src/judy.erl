@@ -9,7 +9,7 @@ init() ->
     Path = filename:join([AppPath, "priv", "judy"]),
     ok = erlang:load_nif(Path, 0).
 
-new() ->
+new(_MaxKeys, _ValueSize) ->
     exit(nif_not_loaded).
 
 insert(_J, _Key, _Value) ->
@@ -32,32 +32,78 @@ num_keys(_J) ->
 
 
 operations_test() ->
-    {ok, J} = new(),
-    ?assertEqual(ok, insert(J, <<"foobar">>, <<"value">>)),
-    ?assertEqual(<<"value">>, get(J, <<"foobar">>)),
-    ?assertEqual(ok, update(J, <<"foobar">>, <<"new">>)),
-    ?assertEqual(<<"new">>, get(J, <<"foobar">>)),
-    ?assertError(badarg, insert(J, <<"foobar">>, <<"other">>)),
+    {ok, J} = new(10000, 2),
+    ?assertEqual(ok, insert(J, <<"foobar">>, <<1, 1>>)),
+    ?assertEqual(<<1, 1>>, get(J, <<"foobar">>)),
+
+    ?assertEqual(ok, insert(J, <<"bazoka">>, <<100, 100>>)),
+    ?assertEqual(<<100, 100>>, get(J, <<"bazoka">>)),
+
+    ?assertEqual(ok, update(J, <<"foobar">>, <<2, 2>>)),
+    ?assertEqual(<<2, 2>>, get(J, <<"foobar">>)),
+
+    ?assertEqual(ok, update(J, <<"bazoka">>, <<3, 3>>)),
+    ?assertEqual(<<3, 3>>, get(J, <<"bazoka">>)),
+
+    ?assertError(badarg, insert(J, <<"foobar">>, <<2, 2>>)),
+    ?assertError(badarg, insert(J, <<"baz">>, <<2, 2, 3>>)),
 
     ?assertEqual(ok, delete(J, <<"foobar">>)),
     ?assertEqual(not_found, get(J, <<"foobar">>)).
 
 
 num_keys_test() ->
-    {ok, J} = new(),
+    {ok, J} = new(100, 1),
     ?assertEqual(0, num_keys(J)),
     ?assertEqual(ok, insert(J, <<1>>, <<1>>)),
     ?assertEqual(ok, insert(J, <<2>>, <<2>>)),
     ?assertEqual(2, num_keys(J)).
 
+max_keys_test() ->
+    {ok, J} = new(3, 1),
+    ?assertEqual(ok, insert(J, <<1>>, <<1>>)),
+    ?assertEqual(ok, insert(J, <<2>>, <<1>>)),
+    ?assertEqual(ok, insert(J, <<3>>, <<1>>)),
+    ?assertError(badarg, insert(J, <<4>>, <<1>>)),
+    ?assertEqual(3, num_keys(J)).
 
-size_test_() ->
+
+leak_test() ->
+    N = 10000000,
+    {ok, J} = new(N, 2),
+    leak_test(J, 1, N).
+    %% leak_test(J, 1, N),
+    %% leak_test(J, 1, N),
+    %% leak_test(J, 1, N),
+    %% leak_test(J, 1, N).
+
+leak_test(_, N, N) ->
+    ok;
+leak_test(J, Start, N) ->
+    case get(J, <<Start:64/integer>>) of
+        not_found ->
+            ok = insert(J, <<Start:64/integer>>, <<Start:16/integer>>);
+        _Val ->
+            ok = update(J, <<Start:64/integer>>, <<Start:16/integer>>)
+    end,
+    leak_test(J, Start+1, N).
+
+
+
+perf_test_() ->
     {timeout, 600,
      fun() ->
-             {ok, J} = new(),
-             populate(J, 1, 1000000),
+             N = 1000000,
+             {ok, J} = new(N, 2),
+             error_logger:info_msg("VM before populating: ~p mb~n",
+                                   [trunc(erlang:memory(total) / 1024 / 1024)]),
+             populate(J, 1, N),
              error_logger:info_msg("keys: ~p~n", [num_keys(J)]),
-             error_logger:info_msg("VM: ~p mb~n", [erlang:memory(total) / 1024 / 1024]),
+             error_logger:info_msg("VM with keys: ~p mb~n",
+                                   [trunc(erlang:memory(total) / 1024 / 1024)]),
+
+             time_reads(J, 1, N),
+
              receive after infinity -> ok end
      end}.
 
@@ -65,5 +111,30 @@ size_test_() ->
 populate(_, N, N) ->
     ok;
 populate(J, Start, N) ->
-    ok = insert(J, <<Start:64/integer>>, <<100:16/integer>>),
+    ok = insert(J, <<Start:64/integer>>, <<Start:16/integer>>),
     populate(J, Start+1, N).
+
+
+time_reads(J, Start, N) ->
+    Reps = 10,
+    StartTime = now(),
+    [check_values(J, Start, N) || _ <- lists:seq(1, Reps)],
+    ElapsedUs = timer:now_diff(now(), StartTime),
+
+    error_logger:info_msg(
+      "REPORT~n"
+      "Keys: ~p~n"
+      "Average of 20 runs: ~p us~n"
+      "Estimated per read: ~p us~n"
+      "Theoretical sequential RPS: ~p~n",
+      [N, ElapsedUs / Reps, ElapsedUs / N / Reps,
+       trunc(1000000 / (ElapsedUs / N / Reps))]),
+
+    ok.
+
+
+check_values(_, N, N) ->
+    ok;
+check_values(J, Start, N) ->
+    ?assertEqual(<<Start:16/integer>>, get(J, <<Start:64/integer>>)),
+    check_values(J, Start+1, N).
