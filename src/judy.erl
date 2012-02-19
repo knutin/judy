@@ -24,6 +24,9 @@ delete(_J, _Key) ->
 get(_J, _Key) ->
     exit(nif_not_loaded).
 
+mget(_J, _Keys) ->
+    exit(nif_not_loaded).
+
 
 num_keys(_J) ->
     exit(nif_not_loaded).
@@ -59,6 +62,18 @@ num_keys_test() ->
     ?assertEqual(ok, insert(J, <<2>>, <<2>>)),
     ?assertEqual(2, num_keys(J)).
 
+
+mget_test() ->
+    N = 100000,
+    {ok, J} = new(N, 1),
+    Keys = [<<I:64/integer>> || I <- lists:seq(1, N)],
+    Values = [<<I:8/integer>> || I <- lists:seq(1, N)],
+
+    [insert(J, <<I:64/integer>>, <<I:8/integer>>) || I <- lists:seq(1, N)],
+    ?assertEqual(Values, mget(J, Keys)).
+
+
+
 max_keys_test() ->
     {ok, J} = new(3, 1),
     ?assertEqual(ok, insert(J, <<1>>, <<1>>)),
@@ -69,13 +84,13 @@ max_keys_test() ->
 
 
 leak_test() ->
-    N = 10000000,
+    N = 100000,
     {ok, J} = new(N, 2),
+    leak_test(J, 1, N),
+    leak_test(J, 1, N),
+    leak_test(J, 1, N),
+    leak_test(J, 1, N),
     leak_test(J, 1, N).
-    %% leak_test(J, 1, N),
-    %% leak_test(J, 1, N),
-    %% leak_test(J, 1, N),
-    %% leak_test(J, 1, N).
 
 leak_test(_, N, N) ->
     ok;
@@ -91,20 +106,12 @@ leak_test(J, Start, N) ->
 
 
 perf_test_() ->
-    {timeout, 600,
+    {timeout, 30,
      fun() ->
              N = 1000000,
              {ok, J} = new(N, 2),
-             error_logger:info_msg("VM before populating: ~p mb~n",
-                                   [trunc(erlang:memory(total) / 1024 / 1024)]),
              populate(J, 1, N),
-             error_logger:info_msg("keys: ~p~n", [num_keys(J)]),
-             error_logger:info_msg("VM with keys: ~p mb~n",
-                                   [trunc(erlang:memory(total) / 1024 / 1024)]),
-
-             time_reads(J, 1, N),
-
-             receive after infinity -> ok end
+             time_reads(J, 1, N)
      end}.
 
 
@@ -116,25 +123,31 @@ populate(J, Start, N) ->
 
 
 time_reads(J, Start, N) ->
-    Reps = 10,
+    Reps = 1000,
+    ChunkSize = 1000,
+    ReadKeys = [<<(random:uniform(N)*Start):64/integer>> || _ <- lists:seq(1, ChunkSize * Reps)],
     StartTime = now(),
-    [check_values(J, Start, N) || _ <- lists:seq(1, Reps)],
+    read_many(J, ReadKeys, ChunkSize, Reps),
     ElapsedUs = timer:now_diff(now(), StartTime),
+    ElapsedSeconds = ElapsedUs / 1000000,
 
     error_logger:info_msg(
-      "REPORT~n"
-      "Keys: ~p~n"
-      "Average of 20 runs: ~p us~n"
-      "Estimated per read: ~p us~n"
-      "Theoretical sequential RPS: ~p~n",
-      [N, ElapsedUs / Reps, ElapsedUs / N / Reps,
-       trunc(1000000 / (ElapsedUs / N / Reps))]),
+      "READ PERFORMANCE~n"
+      "Read ~p keys in ~.2f seconds, ~.2f rps~n",
+      [length(ReadKeys), ElapsedSeconds,
+       length(ReadKeys) / ElapsedSeconds]),
 
     ok.
 
 
-check_values(_, N, N) ->
+
+read_many(_J, [], _, 0) ->
     ok;
-check_values(J, Start, N) ->
-    ?assertEqual(<<Start:16/integer>>, get(J, <<Start:64/integer>>)),
-    check_values(J, Start+1, N).
+read_many(J, AllKeys, ChunkSize, Reps) ->
+    {Keys, Rest} = do_split(ChunkSize, AllKeys),
+    mget(J, Keys),
+    read_many(J, Rest, ChunkSize, Reps-1).
+
+
+do_split(N, L) when length(L) >= N -> lists:split(N, L);
+do_split(_, L) -> L.

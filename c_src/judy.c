@@ -118,6 +118,54 @@ ERL_NIF_TERM judy_get(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
   }
 }
 
+ERL_NIF_TERM judy_mget(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+  judy_t* judy;
+  PWord_t PValue;
+
+  ERL_NIF_TERM list = argv[1];
+  ERL_NIF_TERM item;
+  ErlNifBinary key;
+  unsigned int keys_size;
+
+  if (enif_get_resource(env, argv[0], JUDY_RESOURCE, (void**)&judy))
+    {
+      if (!enif_get_list_length(env, list, &keys_size)) {
+        return enif_make_badarg(env);
+      }
+
+      ERL_NIF_TERM values[keys_size];
+
+      int i = 0;
+      while(enif_get_list_cell(env, list, &item, &list)) {
+        if(!enif_inspect_binary(env, item, &key)) {
+          return enif_make_badarg(env);
+        }
+
+        JHSG(PValue, judy->judy, key.data, key.size);
+
+        if(PValue == NULL) {
+          values[i] = enif_make_atom(env, "not_found");
+        } else {
+          unsigned long index = (int)*PValue;
+
+          ERL_NIF_TERM result_term;
+          unsigned char* result_buf = enif_make_new_binary(env, judy->value_size, &result_term);
+          memcpy(result_buf, &judy->buf[index*judy->value_size], judy->value_size);
+
+          values[i] = result_term;
+        }
+        i++;
+      }
+
+      return enif_make_list_from_array(env, values, keys_size);
+
+    } else {
+    return enif_make_badarg(env);
+  }
+}
+
+
 ERL_NIF_TERM judy_update(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
   ErlNifBinary key;
@@ -195,7 +243,7 @@ void judy_dtor(ErlNifEnv* env, void* arg)
   judy_t* judy = (judy_t*)arg;
   Word_t bytes;
   JHSFA(bytes, judy->judy);
-  fprintf(stderr, "freed %d bytes\n", bytes);
+  /* fprintf(stderr, "freed %d bytes\n", bytes); */
 }
 
 int on_load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
@@ -230,6 +278,7 @@ static ErlNifFunc nif_funcs[] = {
   {"new", 2, judy_new},
   {"insert", 3, judy_insert},
   {"get", 2, judy_get},
+  {"mget", 2, judy_mget},
   {"update", 3, judy_update},
   {"delete", 2, judy_delete},
   {"num_keys", 1, judy_num_keys}
