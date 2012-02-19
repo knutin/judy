@@ -9,6 +9,7 @@ proper offset into this chunk. Deletion is currently not supported.
 See eunit tests in `src/judy.erl` for examples.
 
 Usage:
+
 ```erlang
 
     {ok, J} = judy:new(100, 2).
